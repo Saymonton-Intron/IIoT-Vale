@@ -26,6 +26,7 @@ ConfigureSerilog(builder.Configuration, builder.Host, Log.Logger);
 // Add services to the container.
 
 builder.Services.AddHostedService<MqttListenerWorker>();
+builder.Services.AddHostedService<MqttWriteTestWorker>();
 builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
