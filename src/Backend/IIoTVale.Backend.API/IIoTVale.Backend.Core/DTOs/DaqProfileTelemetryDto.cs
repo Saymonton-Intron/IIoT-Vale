@@ -1,0 +1,17 @@
+﻿using IIoTVale.Backend.Core.Enums;
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace IIoTVale.Backend.Core.DTOs
+{
+    public class DaqProfileTelemetryDto : ITelemetryDto
+    {
+        public DaqMode DaqMode { get; set; }
+        public DaqOptions DaqOptions { get; set; }
+        public StreamingMode StreamingMode { get; set; }
+        public int MaxSampleRate { get; set; }
+        public int SampleRate { get; set; }
+        public TelemetryMode TelemetryMode => TelemetryMode.CREATE;
+    }
+}
