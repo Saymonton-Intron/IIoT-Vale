@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="IIoTVale.Backend.API/IIoTVale.Backend.API.csproj" />
   <Project Path="IIoTVale.Backend.Core/IIoTVale.Backend.Core.csproj" />
+  <Project Path="IIoTVale.Backend.SendTelemetryTester/IIoTVale.Backend.SendTelemetryTester.csproj" />
 </Solution>
