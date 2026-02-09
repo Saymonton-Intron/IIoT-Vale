@@ -4,10 +4,12 @@ using System.Text;
 
 namespace IIoTVale.Backend.Core.Enums
 {
-    public enum DaqOptions
+    public class DaqOptions
     {
-        DATALOGGER,
-        STORE_AND_FORWARD,
-        //STREAMING_TYPE, // Moved to new enum
+        public bool DataLogger { get; set; }
+        public bool StoreAndForward { get; set; }
+        public StreamingType StreamingType { get; set; }
+        public bool Transmission { get; set; }
+        public bool StandAlone { get; set; }
     }
 }

@@ -9,7 +9,6 @@ namespace IIoTVale.Backend.Core.DTOs
     {
         public DaqMode DaqMode { get; set; }
         public DaqOptions DaqOptions { get; set; }
-        public StreamingMode StreamingMode { get; set; }
         public int MaxSampleRate { get; set; }
         public int SampleRate { get; set; }
         public TelemetryMode TelemetryMode => TelemetryMode.CREATE;
