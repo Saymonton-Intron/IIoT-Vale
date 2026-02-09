@@ -9,6 +9,7 @@ namespace IIoTVale.Backend.API.Workers
     {
         private ILogger<MqttListenerWorker> _logger;
         private bool isReconnecting = false;
+        private int lastSequenceId = 0;
         private readonly string HOST = "localhost";
         private readonly int PORT = 1883;
         private readonly string CLIENT_ID = "ApiBackend_Listener";
@@ -56,71 +57,7 @@ namespace IIoTVale.Backend.API.Workers
                 var payload = e.ApplicationMessage.Payload.ToArray();
                 // Implement...
                 ITelemetryDto telemetry = ProcessPayload(payload);
-                if (telemetry is null) return;
-                switch (telemetry.TelemetryMode)
-                {
-                    case TelemetryMode.UPDATE:
-                        if (telemetry is HeartbeatTelemetryDto heartbeat)
-                        {
-                            //return;
-                            Console.Clear();
-                            Console.WriteLine($"Horário do sensor: {heartbeat.DateAndTime.ToString()}");
-                            Console.WriteLine();
-                            Console.WriteLine($"Status de rede");
-                            Console.WriteLine($"PER: {heartbeat.NetworkStatus.ErrorRate}");
-                            Console.WriteLine($"LQI: {heartbeat.NetworkStatus.LQI}");
-                            Console.WriteLine();
-                            Console.WriteLine($"Temperatura: {heartbeat.NetworkStatus.InternalTemperature}ºC");
-                            Console.WriteLine($"");
-                            Console.WriteLine($"Memoria e energia");
-                            Console.WriteLine($"Memoria livre do datalogger: {heartbeat.DataLoggerMemoryPercentage}%");
-                            Console.WriteLine($"Tensão da bateria: {heartbeat.BatteryVolts / 1000}V");
-                            Console.WriteLine($"");
-                            Console.WriteLine($"Sensores");
-                            Console.WriteLine($"Canais disponiveis: {heartbeat.AvailableChannels}");
-                            Console.WriteLine($"Canal um: {heartbeat.ChannelsStatus[0]}");
-                            Console.WriteLine($"Canal dois: {heartbeat.ChannelsStatus[1]}");
-                            Console.WriteLine($"Canal tres: {heartbeat.ChannelsStatus[2]}");
-                        }
-                        break;
-                    case TelemetryMode.CREATE:
-                        if (telemetry is DaqProfileTelemetryDto daqProfile)
-                        {
-                            var daqMode = daqProfile.DaqMode switch
-                            {
-                                DaqMode.STREAMING => "STREAMING",
-                                DaqMode.COMMISSIONING => "TA PARADO",
-                                _ => "TAPORRA"
-                            };
-                            var type = daqProfile.DaqOptions.StreamingType switch
-                            {
-                                StreamingType.CONTINUOUS => "Continuous",
-                                StreamingType.BURST => "Burst",
-                                StreamingType.ONE_SHOT => "One shota",
-                                _ => "ERRO"
-                            };
-                            Console.Clear();
-                            Console.WriteLine($"DAQ MODE: {daqMode}");
-                            Console.WriteLine();
-                            Console.WriteLine($"DAQ OPTIONS");
-                            Console.WriteLine($"Datalogger:  {daqProfile.DaqOptions.DataLogger.ToString()}");
-                            Console.WriteLine($"Store & Forward:  {daqProfile.DaqOptions.StoreAndForward.ToString()}");
-                            Console.WriteLine($"Streaming type: {type}");
-                            Console.WriteLine($"Transmission:  {daqProfile.DaqOptions.Transmission.ToString()}");
-                            Console.WriteLine($"Stand Alone: {daqProfile.DaqOptions.StandAlone.ToString()}");
-                            Console.WriteLine();
-                            Console.WriteLine($"MAX TX: {daqProfile.MaxSampleRate}");
-                            Console.WriteLine($"CURRENT TX: {daqProfile.SampleRate}");
-                        }
-                        break;
-                }
-
-                //Console.Write($"RECEBIDO EM {e.ApplicationMessage.Topic}: ");
-                //foreach (byte load in payload)
-                //{
-                //    Console.Write($"0x{load:X2}"+ " ");
-                //}
-                //Console.WriteLine();
+                
             };
 
             mqttClient.DisconnectedAsync += async e =>
@@ -216,7 +153,170 @@ namespace IIoTVale.Backend.API.Workers
                     };
                 }
             }
+            else if (payload[0] == 0x01 && payload[1] == 0x03) //Streaming mode continuous
+            {
+                var frequency = BitConverter.ToInt16([payload[8], payload[9]], 0);
+                if (frequency == 0) frequency = 200; //Valor padrão
+
+                double timeStepMs = 1000.0 / frequency; // define o passo ex: 200Hz = 5ms
+
+                var timestamp = BitConverter.ToInt32([payload[2], payload[3], payload[4], payload[5]], 0);
+                var milliSec = BitConverter.ToInt16([payload[6], payload[7]], 0);
+
+                var samplesInPackage = BitConverter.ToInt16([payload[17], payload[18]], 0);
+
+                DateTime packageArrivelTime = DateTime.UtcNow;
+                DateTime baseTime = packageArrivelTime.AddMilliseconds(-(samplesInPackage * timeStepMs)); // define um tempo base para distribuir os pacotes no tempo
+
+                int currentSeq = BitConverter.ToInt32([payload[14], payload[15], payload[16], 0], 0);
+
+                int lostSequence = currentSeq - lastSequenceId;
+                if (lostSequence > 1)
+                {
+                    int lost = lostSequence - 1;
+                    _logger.LogError("{lost} packages was lost.", lost);
+                }
+                lastSequenceId = currentSeq;
+
+                List<DataModel> dataModels = [];
+                for (int i = 29; i <= payload.Length - 9; i += 9)
+                {
+                    dataModels.Add(new()
+                    {
+                        AccZ = Read3Bytes(payload, i) / 1000.0,
+                        AccX = Read3Bytes(payload, i + 3) / 1000.0,
+                        AccY = Read3Bytes(payload, i + 6) / 1000.0,
+                        SampleTime = baseTime.AddMilliseconds((dataModels.Count + 1) * timeStepMs)
+                    });
+                }
+                return new DataStreamingDto()
+                {
+                    DataModel = dataModels,
+                    Frequency = frequency,
+                    TimeStamp = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(timestamp).AddMilliseconds(milliSec),
+                };
+                // Aviso pro futuro:
+                // Quando 1 eixo está desabilitado, a lógica do for não quebra mas os valores serão inconsistentes.
+                // Estamos usando o horário do servidor pois o acelerometro não manda horario por amostra.
+            }
             return null;
+        }
+        private static double Read3Bytes(byte[] buffer, int offset)
+        {
+            byte b0 = buffer[offset];     // Low
+            byte b1 = buffer[offset + 1]; // Mid
+            byte b2 = buffer[offset + 2]; // High + Sign
+
+            // Verifica o sinal (Bit 7 do terceiro byte)
+            bool negativo = (b2 & 0x80) != 0;
+
+            // Remove o bit de sinal para pegar a magnitude
+            int highByteLimpo = b2 & 0x7F;
+
+            // Monta o valor: (High << 16) | (Mid << 8) | Low
+            int magnitude = (highByteLimpo << 16) | (b1 << 8) | b0;
+
+            // Aplica o sinal
+            return negativo ? -magnitude : magnitude;
+        }
+        private static void DebugTelemetryOnConsole(byte[] payload, string topic, ITelemetryDto telemetry)
+        {
+            if (telemetry is null)
+            {
+                Console.Clear();
+                Console.Write($"RECEBIDO EM {topic} bytes lenhth {payload.Length}: ");
+                int count = 0;
+                foreach (byte load in payload)
+                {
+
+                    Console.Write(count + ":");
+
+                    Console.Write($"0x{load:X2}" + " ");
+
+                    count++;
+                }
+                Console.WriteLine();
+                return;
+            }
+            switch (telemetry.TelemetryMode)
+            {
+                case TelemetryMode.UPDATE:
+                    if (telemetry is HeartbeatTelemetryDto heartbeat)
+                    {
+                        //return;
+                        Console.Clear();
+                        Console.WriteLine($"Horário do sensor: {heartbeat.DateAndTime.ToString()}");
+                        Console.WriteLine();
+                        Console.WriteLine($"Status de rede");
+                        Console.WriteLine($"PER: {heartbeat.NetworkStatus.ErrorRate}");
+                        Console.WriteLine($"LQI: {heartbeat.NetworkStatus.LQI}");
+                        Console.WriteLine();
+                        Console.WriteLine($"Temperatura: {heartbeat.NetworkStatus.InternalTemperature}ºC");
+                        Console.WriteLine($"");
+                        Console.WriteLine($"Memoria e energia");
+                        Console.WriteLine($"Memoria livre do datalogger: {heartbeat.DataLoggerMemoryPercentage}%");
+                        Console.WriteLine($"Tensão da bateria: {heartbeat.BatteryVolts / 1000}V");
+                        Console.WriteLine($"");
+                        Console.WriteLine($"Sensores");
+                        Console.WriteLine($"Canais disponiveis: {heartbeat.AvailableChannels}");
+                        Console.WriteLine($"Canal um: {heartbeat.ChannelsStatus[0]}");
+                        Console.WriteLine($"Canal dois: {heartbeat.ChannelsStatus[1]}");
+                        Console.WriteLine($"Canal tres: {heartbeat.ChannelsStatus[2]}");
+                    }
+                    break;
+                case TelemetryMode.CREATE:
+                    if (telemetry is DaqProfileTelemetryDto daqProfile)
+                    {
+                        var daqMode = daqProfile.DaqMode switch
+                        {
+                            DaqMode.STREAMING => "STREAMING",
+                            DaqMode.COMMISSIONING => "TA PARADO",
+                            _ => "TAPORRA"
+                        };
+                        var type = daqProfile.DaqOptions.StreamingType switch
+                        {
+                            StreamingType.CONTINUOUS => "Continuous",
+                            StreamingType.BURST => "Burst",
+                            StreamingType.ONE_SHOT => "One shota",
+                            _ => "ERRO"
+                        };
+                        Console.Clear();
+                        Console.WriteLine($"DAQ MODE: {daqMode}");
+                        Console.WriteLine();
+                        Console.WriteLine($"DAQ OPTIONS");
+                        Console.WriteLine($"Datalogger:  {daqProfile.DaqOptions.DataLogger.ToString()}");
+                        Console.WriteLine($"Store & Forward:  {daqProfile.DaqOptions.StoreAndForward.ToString()}");
+                        Console.WriteLine($"Streaming type: {type}");
+                        Console.WriteLine($"Transmission:  {daqProfile.DaqOptions.Transmission.ToString()}");
+                        Console.WriteLine($"Stand Alone: {daqProfile.DaqOptions.StandAlone.ToString()}");
+                        Console.WriteLine();
+                        Console.WriteLine($"MAX TX: {daqProfile.MaxSampleRate}");
+                        Console.WriteLine($"CURRENT TX: {daqProfile.SampleRate}");
+                    }
+                    else if (telemetry is DataStreamingDto dataStreaming)
+                    {
+                        Console.Clear();
+                        Console.WriteLine($"Aquisicionando dados a {dataStreaming.Frequency}Hz");
+                        Console.WriteLine();
+                        Console.Write("Acc Z    " + dataStreaming.DataModel[0].AccZ);
+
+                        Console.WriteLine();
+                        Console.Write("Acc Y    " + dataStreaming.DataModel[0].AccY);
+
+                        Console.WriteLine();
+                        Console.WriteLine("Acc X    " + dataStreaming.DataModel[0].AccX);
+
+                        Console.WriteLine();
+                        Console.WriteLine(dataStreaming.TimeStamp.ToString("dd/MM/yyyy 'às' HH:mm:ss 'UTC'"));
+
+                        Console.WriteLine();
+                        //Console.WriteLine("Num de pacotes: " + dataStreaming.NumSamples);
+                        Console.WriteLine("Tamanho da lista: " + dataStreaming.DataModel.Count);
+                        Console.WriteLine();
+                        //Console.WriteLine("SequenceID: " + dataStreaming.SequenceID);
+                    }
+                    break;
+            }
         }
     }
 }
