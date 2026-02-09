@@ -1,17 +1,12 @@
 using IIoTVale.Backend.API.Workers;
 using Serilog;
 
-void ConfigureSerilog(ConfigurationManager configurationManager, ConfigureHostBuilder host, Serilog.ILogger logger)
+void ConfigureSerilog(ConfigurationManager configurationManager, ConfigureHostBuilder host)
 {
     var absoluteLogPath = Path.Combine(AppContext.BaseDirectory, "logs", "log-.json");
     configurationManager["Serilog:WriteTo:0:Args:path"] = absoluteLogPath;
     // Ensure the directory exists
     Directory.CreateDirectory(Path.GetDirectoryName(absoluteLogPath) ?? AppContext.BaseDirectory);
-
-    logger = new LoggerConfiguration()
-        .Enrich.FromLogContext()
-        .WriteTo.Console()
-        .CreateLogger();
 
     // Configure Host to use serilog and use appsettings.json configurations
     host.UseSerilog((context, services, lc) => lc
@@ -22,7 +17,7 @@ void ConfigureSerilog(ConfigurationManager configurationManager, ConfigureHostBu
 
 var builder = WebApplication.CreateBuilder(args);
 
-ConfigureSerilog(builder.Configuration, builder.Host, Log.Logger);
+ConfigureSerilog(builder.Configuration, builder.Host);
 // Add services to the container.
 
 builder.Services.AddHostedService<MqttListenerWorker>();
