@@ -1,8 +1,7 @@
 using IIoTVale.Backend.API.Services;
 using IIoTVale.Backend.API.Workers;
-using IIoTVale.Backend.Core.DTOs;
+using IIoTVale.Backend.API.Wrappers;
 using Serilog;
-using System.Threading.Channels;
 
 void ConfigureSerilog(ConfigurationManager configurationManager, ConfigureHostBuilder host)
 {
@@ -24,13 +23,14 @@ ConfigureSerilog(builder.Configuration, builder.Host);
 // Add services to the container.
 
 builder.Services.AddHostedService<MqttListenerWorker>();
-builder.Services.AddHostedService<DataProcessorWorker>();
+builder.Services.AddHostedService<DbProcessorWorker>();
 builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
-builder.Services.AddSingleton<Channel<ITelemetryDto>>(sp =>
-    Channel.CreateUnbounded<ITelemetryDto>());
+builder.Services.AddSingleton<DbChannel>();
+builder.Services.AddSingleton<UiChannel>();
+
 builder.Services.AddSingleton<DatabaseService>();
 
 int result = 0;

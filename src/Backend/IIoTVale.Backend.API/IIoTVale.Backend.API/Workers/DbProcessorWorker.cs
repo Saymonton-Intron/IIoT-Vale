@@ -1,36 +1,36 @@
 ﻿
 using IIoTVale.Backend.API.Services;
+using IIoTVale.Backend.API.Wrappers;
 using IIoTVale.Backend.Core.DTOs;
 using System.Threading.Channels;
 
 namespace IIoTVale.Backend.API.Workers
 {
-    public class DataProcessorWorker : BackgroundService
+    public class DbProcessorWorker : BackgroundService
     {
-        private readonly ChannelReader<ITelemetryDto> _reader;
+        private readonly ChannelReader<ITelemetryDto> _dbReader;
 
+        //Lembrar de se inscrever no UPDATE do sensor pra limpar esse camarada qunado o sensor parar de enviar dados,
+        // pra quando for batchear não enviar dado antigo (não critico mas boa prática).
         private readonly List<DataStreamingDto> _batchBuffer = [];
         private readonly int BATCH_SIZE = 5;
-        private readonly ILogger<DataProcessorWorker> _logger;
+        private readonly ILogger<DbProcessorWorker> _logger;
         private readonly DatabaseService _databaseService;
 
-        public DataProcessorWorker(ILogger<DataProcessorWorker> _logger, Channel<ITelemetryDto> _channel, DatabaseService databaseService)
+        public DbProcessorWorker(ILogger<DbProcessorWorker> _logger, DbChannel dbChannel, DatabaseService databaseService)
         {
             this._logger = _logger;
             this._databaseService = databaseService;
-            this._reader = _channel.Reader;
+            this._dbReader = dbChannel.Reader;
         }
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            await foreach (ITelemetryDto dto in _reader.ReadAllAsync(stoppingToken))
+            await foreach (ITelemetryDto dto in _dbReader.ReadAllAsync(stoppingToken))
             {
                 try
                 {
                     if (dto is DataStreamingDto data)
                     {
-                        // Fazer um downSampling e enviar para o front async
-                        // ...
-
                         _batchBuffer.Add(data);
 
                         if (_batchBuffer.Count >= BATCH_SIZE)
