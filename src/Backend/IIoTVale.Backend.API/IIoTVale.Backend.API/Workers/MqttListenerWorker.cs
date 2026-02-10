@@ -56,7 +56,7 @@ namespace IIoTVale.Backend.API.Workers
             {
                 var payload = e.ApplicationMessage.Payload.ToArray();
                 // Implement...
-                ITelemetryDto telemetry = ProcessPayload(payload);
+                ITelemetryDto telemetry = ProcessPayload(e.ApplicationMessage.Topic, payload);
                 
             };
 
@@ -93,12 +93,20 @@ namespace IIoTVale.Backend.API.Workers
                 throw;
             }
         }
-        private ITelemetryDto ProcessPayload(byte[] payload)
+        private ITelemetryDto ProcessPayload(string topic, byte[] payload)
         {
+            int slashPosition = topic.IndexOf('/');
+            if (slashPosition == -1)
+            {
+                return null; // por enquanto só processamos dados vindos do sensor
+            }
+            string sensorMAC = topic[..slashPosition];
+
             if (payload[1] == 0x0E) //HeartBeat
             {
                 return new HeartbeatTelemetryDto()
                 {
+                    SensorMAC = sensorMAC,
                     SensorType = Core.Enums.SensorType.ACCELEROMETER,
                     DateAndTime = new DateTime(BitConverter.ToInt16([payload[17], payload[18]], 0), payload[19], payload[20], payload[21], payload[22], payload[23]),
                     NetworkStatus = new()
@@ -130,6 +138,7 @@ namespace IIoTVale.Backend.API.Workers
 
                     return new DaqProfileTelemetryDto()
                     {
+                        SensorMAC = sensorMAC,
                         DaqMode = payload[18] switch
                         {
                             0x01 => DaqMode.COMMISSIONING,
@@ -191,6 +200,7 @@ namespace IIoTVale.Backend.API.Workers
                 }
                 return new DataStreamingDto()
                 {
+                    SensorMAC = sensorMAC,
                     DataModel = dataModels,
                     Frequency = frequency,
                     TimeStamp = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(timestamp).AddMilliseconds(milliSec),
@@ -245,6 +255,8 @@ namespace IIoTVale.Backend.API.Workers
                     {
                         //return;
                         Console.Clear();
+                        Console.WriteLine("Sensor: " + heartbeat.SensorMAC);
+                        Console.WriteLine();
                         Console.WriteLine($"Horário do sensor: {heartbeat.DateAndTime.ToString()}");
                         Console.WriteLine();
                         Console.WriteLine($"Status de rede");
@@ -281,6 +293,8 @@ namespace IIoTVale.Backend.API.Workers
                             _ => "ERRO"
                         };
                         Console.Clear();
+                        Console.WriteLine("Sensor: " + daqProfile.SensorMAC);
+                        Console.WriteLine();
                         Console.WriteLine($"DAQ MODE: {daqMode}");
                         Console.WriteLine();
                         Console.WriteLine($"DAQ OPTIONS");
@@ -296,7 +310,7 @@ namespace IIoTVale.Backend.API.Workers
                     else if (telemetry is DataStreamingDto dataStreaming)
                     {
                         Console.Clear();
-                        Console.WriteLine($"Aquisicionando dados a {dataStreaming.Frequency}Hz");
+                        Console.WriteLine($"Aquisicionando dados a {dataStreaming.Frequency}Hz do sensor {dataStreaming.SensorMAC}");
                         Console.WriteLine();
                         Console.Write("Acc Z    " + dataStreaming.DataModel[0].AccZ);
 
@@ -307,7 +321,7 @@ namespace IIoTVale.Backend.API.Workers
                         Console.WriteLine("Acc X    " + dataStreaming.DataModel[0].AccX);
 
                         Console.WriteLine();
-                        Console.WriteLine(dataStreaming.TimeStamp.ToString("dd/MM/yyyy 'às' HH:mm:ss 'UTC'"));
+                        Console.WriteLine("Inicio da aquisição: " + dataStreaming.TimeStamp.ToString("dd/MM/yyyy 'às' HH:mm:ss 'UTC'"));
 
                         Console.WriteLine();
                         //Console.WriteLine("Num de pacotes: " + dataStreaming.NumSamples);

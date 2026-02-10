@@ -7,6 +7,7 @@ namespace IIoTVale.Backend.Core.DTOs
 {
     public class HeartbeatTelemetryDto : ITelemetryDto
     {
+        public string SensorMAC { get; set; }
         public DateTime DateAndTime { get; set; }
         public SysAndNetworkStatus NetworkStatus { get; set; }
         /// <summary>

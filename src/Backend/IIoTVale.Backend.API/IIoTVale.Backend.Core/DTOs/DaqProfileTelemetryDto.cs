@@ -7,6 +7,7 @@ namespace IIoTVale.Backend.Core.DTOs
 {
     public class DaqProfileTelemetryDto : ITelemetryDto
     {
+        public string SensorMAC { get; set; }
         public DaqMode DaqMode { get; set; }
         public DaqOptions DaqOptions { get; set; }
         public int MaxSampleRate { get; set; }
