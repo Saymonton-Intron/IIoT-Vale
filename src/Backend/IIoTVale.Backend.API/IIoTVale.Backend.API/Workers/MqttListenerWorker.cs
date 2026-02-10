@@ -3,6 +3,7 @@ using IIoTVale.Backend.Core.Enums;
 using MQTTnet;
 using System.Buffers;
 using System.Text;
+using System.Threading.Channels;
 namespace IIoTVale.Backend.API.Workers
 {
     public class MqttListenerWorker : BackgroundService
@@ -13,9 +14,11 @@ namespace IIoTVale.Backend.API.Workers
         private readonly string HOST = "localhost";
         private readonly int PORT = 1883;
         private readonly string CLIENT_ID = "ApiBackend_Listener";
-        public MqttListenerWorker(ILogger<MqttListenerWorker> logger)
+        private readonly ChannelWriter<ITelemetryDto> _writer;
+        public MqttListenerWorker(ILogger<MqttListenerWorker> logger, Channel<ITelemetryDto> telemetryChannel)
         {
             _logger = logger;
+            _writer = telemetryChannel.Writer;
         }
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
@@ -57,7 +60,10 @@ namespace IIoTVale.Backend.API.Workers
                 var payload = e.ApplicationMessage.Payload.ToArray();
                 // Implement...
                 ITelemetryDto telemetry = ProcessPayload(e.ApplicationMessage.Topic, payload);
-                
+                if (telemetry is DataStreamingDto streaming)
+                {
+                    await _writer.WriteAsync(streaming);
+                }
             };
 
             mqttClient.DisconnectedAsync += async e =>
@@ -101,114 +107,121 @@ namespace IIoTVale.Backend.API.Workers
                 return null; // por enquanto só processamos dados vindos do sensor
             }
             string sensorMAC = topic[..slashPosition];
-
-            if (payload[1] == 0x0E) //HeartBeat
+            try
             {
-                return new HeartbeatTelemetryDto()
+                if (payload[1] == 0x0E) //HeartBeat
                 {
-                    SensorMAC = sensorMAC,
-                    SensorType = Core.Enums.SensorType.ACCELEROMETER,
-                    DateAndTime = new DateTime(BitConverter.ToInt16([payload[17], payload[18]], 0), payload[19], payload[20], payload[21], payload[22], payload[23]),
-                    NetworkStatus = new()
-                    {
-                        ErrorRate = BitConverter.ToInt16([payload[26], payload[27]]),
-                        LQI = payload[28],
-                        InternalTemperature = BitConverter.ToInt16([payload[33], payload[34]]) / 2
-                    },
-                    DataLoggerMemoryPercentage = (payload[37] / 200.0) * 100.0,
-                    BatteryVolts = BitConverter.ToInt16([payload[42], payload[43]]),
-                    AvailableChannels = payload[44],
-                    ChannelsStatus = [payload[45], payload[46], payload[47]],
-                };
-            }
-            else if (payload[1] == 0x4F) // 0x4F CREATE PROFILE | 0x10 DAQ
-            {
-                if (payload[17] == 0x10) // testa se é DAQ profile
-                {
-                    var DaqOptions = BitConverter.ToInt16([payload[19], payload[20]], 0);
-                    bool bit2 = (DaqOptions & (1 << 2)) != 0;
-                    bool bit3 = (DaqOptions & (1 << 3)) != 0;
-                    bool bit4 = (DaqOptions & (1 << 4)) != 0;
-
-                    StreamingType type;
-                    if (bit2 && !bit3 && !bit4) type = StreamingType.CONTINUOUS;
-                    else if (bit3 && !bit2 && !bit4) type = StreamingType.ONE_SHOT;
-                    else if (bit4 && bit3 && !bit2) type = StreamingType.BURST;
-                    else throw new NotImplementedException();
-
-                    return new DaqProfileTelemetryDto()
+                    return new HeartbeatTelemetryDto()
                     {
                         SensorMAC = sensorMAC,
-                        DaqMode = payload[18] switch
+                        SensorType = Core.Enums.SensorType.ACCELEROMETER,
+                        DateAndTime = new DateTime(BitConverter.ToInt16([payload[17], payload[18]], 0), payload[19], payload[20], payload[21], payload[22], payload[23]),
+                        NetworkStatus = new()
                         {
-                            0x01 => DaqMode.COMMISSIONING,
-                            0x02 => DaqMode.LOW_DUTY_CYCLE,
-                            0x03 => DaqMode.STREAMING,
-                            0x04 => DaqMode.ALARM,
-                            0x05 => DaqMode.SET_MODE,
-                            0x06 => DaqMode.SHOCK_DETECTION,
-                            _ => throw new NotImplementedException()
+                            ErrorRate = BitConverter.ToInt16([payload[26], payload[27]]),
+                            LQI = payload[28],
+                            InternalTemperature = BitConverter.ToInt16([payload[33], payload[34]]) / 2
                         },
-                        DaqOptions = new()
-                        {
-                            DataLogger = (DaqOptions & (1 << 0)) != 0,
-                            StoreAndForward = (DaqOptions & (1 << 1)) != 0,
-                            StreamingType = type,
-                            Transmission = (DaqOptions & (1 << 5)) != 0,
-                            StandAlone = (DaqOptions & (1 << 6)) != 0,
-                        },
-                        MaxSampleRate = BitConverter.ToInt32([payload[31], payload[32], payload[33], 0], 0),
-                        SampleRate = BitConverter.ToInt32([payload[34], payload[35], payload[36], 0], 0) // recurso técnico
+                        DataLoggerMemoryPercentage = (payload[37] / 200.0) * 100.0,
+                        BatteryVolts = BitConverter.ToInt16([payload[42], payload[43]]),
+                        AvailableChannels = payload[44],
+                        ChannelsStatus = [payload[45], payload[46], payload[47]],
                     };
                 }
-            }
-            else if (payload[0] == 0x01 && payload[1] == 0x03) //Streaming mode continuous
-            {
-                var frequency = BitConverter.ToInt16([payload[8], payload[9]], 0);
-                if (frequency == 0) frequency = 200; //Valor padrão
-
-                double timeStepMs = 1000.0 / frequency; // define o passo ex: 200Hz = 5ms
-
-                var timestamp = BitConverter.ToInt32([payload[2], payload[3], payload[4], payload[5]], 0);
-                var milliSec = BitConverter.ToInt16([payload[6], payload[7]], 0);
-
-                var samplesInPackage = BitConverter.ToInt16([payload[17], payload[18]], 0);
-
-                DateTime packageArrivelTime = DateTime.UtcNow;
-                DateTime baseTime = packageArrivelTime.AddMilliseconds(-(samplesInPackage * timeStepMs)); // define um tempo base para distribuir os pacotes no tempo
-
-                int currentSeq = BitConverter.ToInt32([payload[14], payload[15], payload[16], 0], 0);
-
-                int lostSequence = currentSeq - lastSequenceId;
-                if (lostSequence > 1)
+                else if (payload[1] == 0x4F) // 0x4F CREATE PROFILE | 0x10 DAQ
                 {
-                    int lost = lostSequence - 1;
-                    _logger.LogError("{lost} packages was lost.", lost);
-                }
-                lastSequenceId = currentSeq;
-
-                List<DataModel> dataModels = [];
-                for (int i = 29; i <= payload.Length - 9; i += 9)
-                {
-                    dataModels.Add(new()
+                    if (payload[17] == 0x10) // testa se é DAQ profile
                     {
-                        AccZ = Read3Bytes(payload, i) / 1000.0,
-                        AccX = Read3Bytes(payload, i + 3) / 1000.0,
-                        AccY = Read3Bytes(payload, i + 6) / 1000.0,
-                        SampleTime = baseTime.AddMilliseconds((dataModels.Count + 1) * timeStepMs)
-                    });
+                        var DaqOptions = BitConverter.ToInt16([payload[19], payload[20]], 0);
+                        bool bit2 = (DaqOptions & (1 << 2)) != 0;
+                        bool bit3 = (DaqOptions & (1 << 3)) != 0;
+                        bool bit4 = (DaqOptions & (1 << 4)) != 0;
+
+                        StreamingType type;
+                        if (bit2 && !bit3 && !bit4) type = StreamingType.CONTINUOUS;
+                        else if (bit3 && !bit2 && !bit4) type = StreamingType.ONE_SHOT;
+                        else if (bit4 && bit3 && !bit2) type = StreamingType.BURST;
+                        else throw new NotImplementedException();
+
+                        return new DaqProfileTelemetryDto()
+                        {
+                            SensorMAC = sensorMAC,
+                            DaqMode = payload[18] switch
+                            {
+                                0x01 => DaqMode.COMMISSIONING,
+                                0x02 => DaqMode.LOW_DUTY_CYCLE,
+                                0x03 => DaqMode.STREAMING,
+                                0x04 => DaqMode.ALARM,
+                                0x05 => DaqMode.SET_MODE,
+                                0x06 => DaqMode.SHOCK_DETECTION,
+                                _ => throw new NotImplementedException()
+                            },
+                            DaqOptions = new()
+                            {
+                                DataLogger = (DaqOptions & (1 << 0)) != 0,
+                                StoreAndForward = (DaqOptions & (1 << 1)) != 0,
+                                StreamingType = type,
+                                Transmission = (DaqOptions & (1 << 5)) != 0,
+                                StandAlone = (DaqOptions & (1 << 6)) != 0,
+                            },
+                            MaxSampleRate = BitConverter.ToInt32([payload[31], payload[32], payload[33], 0], 0),
+                            SampleRate = BitConverter.ToInt32([payload[34], payload[35], payload[36], 0], 0) // recurso técnico
+                        };
+                    }
                 }
-                return new DataStreamingDto()
+                else if (payload[0] == 0x01 && payload[1] == 0x03) //Streaming mode continuous
                 {
-                    SensorMAC = sensorMAC,
-                    DataModel = dataModels,
-                    Frequency = frequency,
-                    TimeStamp = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(timestamp).AddMilliseconds(milliSec),
-                };
-                // Aviso pro futuro:
-                // Quando 1 eixo está desabilitado, a lógica do for não quebra mas os valores serão inconsistentes.
-                // Estamos usando o horário do servidor pois o acelerometro não manda horario por amostra.
+                    var frequency = BitConverter.ToInt16([payload[8], payload[9]], 0);
+                    if (frequency == 0) frequency = 200; //Valor padrão
+
+                    double timeStepMs = 1000.0 / frequency; // define o passo ex: 200Hz = 5ms
+
+                    var timestamp = BitConverter.ToInt32([payload[2], payload[3], payload[4], payload[5]], 0);
+                    var milliSec = BitConverter.ToInt16([payload[6], payload[7]], 0);
+
+                    var samplesInPackage = BitConverter.ToInt16([payload[17], payload[18]], 0);
+
+                    DateTime packageArrivelTime = DateTime.UtcNow;
+                    DateTime baseTime = packageArrivelTime.AddMilliseconds(-(samplesInPackage * timeStepMs)); // define um tempo base para distribuir os pacotes no tempo
+
+                    int currentSeq = BitConverter.ToInt32([payload[14], payload[15], payload[16], 0], 0);
+
+                    int lostSequence = currentSeq - lastSequenceId;
+                    if (lostSequence > 1)
+                    {
+                        int lost = lostSequence - 1;
+                        _logger.LogError("{lost} packages was lost.", lost);
+                    }
+                    lastSequenceId = currentSeq;
+
+                    List<DataModel> dataModels = [];
+                    for (int i = 29; i <= payload.Length - 9; i += 9)
+                    {
+                        dataModels.Add(new()
+                        {
+                            AccZ = Read3Bytes(payload, i) / 1000.0,
+                            AccX = Read3Bytes(payload, i + 3) / 1000.0,
+                            AccY = Read3Bytes(payload, i + 6) / 1000.0,
+                            SampleTime = baseTime.AddMilliseconds((dataModels.Count + 1) * timeStepMs)
+                        });
+                    }
+                    return new DataStreamingDto()
+                    {
+                        SensorMAC = sensorMAC,
+                        DataModel = dataModels,
+                        Frequency = frequency,
+                        TimeStamp = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(timestamp).AddMilliseconds(milliSec),
+                    };
+                    // Aviso pro futuro:
+                    // Quando 1 eixo está desabilitado, a lógica do for não quebra mas os valores serão inconsistentes.
+                    // Estamos usando o horário do servidor pois o acelerometro não manda horario por amostra.
+                }
             }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing payload...");
+            }
+            
             return null;
         }
         private static double Read3Bytes(byte[] buffer, int offset)
