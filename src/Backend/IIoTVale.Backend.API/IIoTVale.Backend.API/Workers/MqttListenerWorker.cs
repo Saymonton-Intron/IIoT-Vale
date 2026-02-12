@@ -1,8 +1,11 @@
-﻿using IIoTVale.Backend.API.Wrappers;
+﻿using IIoTVale.Backend.API.Services;
+using IIoTVale.Backend.API.Wrappers;
 using IIoTVale.Backend.Core.DTOs;
 using IIoTVale.Backend.Core.Enums;
 using MQTTnet;
 using System.Buffers;
+using System.Diagnostics;
+using System.Net.WebSockets;
 using System.Text;
 using System.Threading.Channels;
 namespace IIoTVale.Backend.API.Workers
@@ -17,11 +20,13 @@ namespace IIoTVale.Backend.API.Workers
         private readonly string CLIENT_ID = "ApiBackend_Listener";
         private readonly ChannelWriter<ITelemetryDto> _Dbwriter;
         private readonly ChannelWriter<ITelemetryDto> _Uiwriter;
-        public MqttListenerWorker(ILogger<MqttListenerWorker> logger, DbChannel dbChannel, UiChannel uiChannel)
+        private readonly WebSocketHandler _webSocket;
+        public MqttListenerWorker(ILogger<MqttListenerWorker> logger, DbChannel dbChannel, UiChannel uiChannel, WebSocketHandler webSocket)
         {
             _logger = logger;
             _Dbwriter = dbChannel.Writer;
             _Uiwriter = uiChannel.Writer;
+            _webSocket = webSocket;
         }
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
@@ -66,7 +71,11 @@ namespace IIoTVale.Backend.API.Workers
                 if (telemetry is DataStreamingDto streaming)
                 {
                     await _Dbwriter.WriteAsync(streaming);
+
+                    if (_webSocket.AnyConnectionAvailable)
+                    {
                     await _Uiwriter.WriteAsync(streaming);
+                    }
                 }
             };
 

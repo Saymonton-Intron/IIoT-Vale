@@ -24,6 +24,7 @@ ConfigureSerilog(builder.Configuration, builder.Host);
 
 builder.Services.AddHostedService<MqttListenerWorker>();
 builder.Services.AddHostedService<DbProcessorWorker>();
+builder.Services.AddHostedService<UiProcessorWorker>();
 builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
@@ -32,6 +33,8 @@ builder.Services.AddSingleton<DbChannel>();
 builder.Services.AddSingleton<UiChannel>();
 
 builder.Services.AddSingleton<DatabaseService>();
+
+builder.Services.AddSingleton<WebSocketHandler>();
 
 int result = 0;
 try
@@ -53,6 +56,27 @@ try
     app.UseAuthorization();
 
     app.MapControllers();
+
+    app.UseCors(policy => policy // Alterar depois
+        .WithOrigins("http://192.168.7.6:3000/")
+        .AllowAnyMethod()
+        .AllowAnyHeader()
+        .AllowCredentials());
+
+    app.UseWebSockets();
+
+    app.Map("/ws", async (HttpContext context, WebSocketHandler manager) =>
+    {
+        if (context.WebSockets.IsWebSocketRequest)
+        {
+            using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+            await manager.AddConnection(webSocket);
+        }
+        else
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        }
+    });
 
     await app.RunAsync();
 
