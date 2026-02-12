@@ -67,7 +67,7 @@ namespace IIoTVale.Backend.API.Services
                             }
 
                             await writer.CompleteAsync(stoppingToken);
-                            _logger.LogInformation("Operação concluída.");
+                            _logger.LogInformation("Dados salvos no banco.");
                         }
                     }
                 }
