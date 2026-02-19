@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading.Channels;
+using static IIoTVale.Backend.API.Services.WebSocketClient;
 namespace IIoTVale.Backend.API.Workers
 {
     public class MqttListenerWorker : BackgroundService

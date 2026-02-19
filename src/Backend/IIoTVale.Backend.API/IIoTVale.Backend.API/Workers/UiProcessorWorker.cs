@@ -1,11 +1,13 @@
 ﻿using IIoTVale.Backend.API.Services;
 using IIoTVale.Backend.API.Wrappers;
 using IIoTVale.Backend.Core.DTOs;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq.Expressions;
 using System.Net.Mail;
 using System.Threading;
 using System.Threading.Channels;
+using static IIoTVale.Backend.API.Services.WebSocketClient;
 
 namespace IIoTVale.Backend.API.Workers
 {
@@ -18,6 +20,7 @@ namespace IIoTVale.Backend.API.Workers
 
     public class UiProcessorWorker : BackgroundService
     {
+        private readonly ConcurrentDictionary<string, DateTime> _activeSensors = new();
         private readonly ILogger<UiProcessorWorker> _logger;
         private readonly ChannelReader<ITelemetryDto> _uiReader;
         private readonly Queue<DataModel> _fftQueue = new();
@@ -35,18 +38,63 @@ namespace IIoTVale.Backend.API.Workers
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                using CancellationTokenSource cts = new();
-                using CancellationTokenSource switchCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, cts.Token);
+                //  Processar dados para AMBOS os modos simultaneamente
+                // Cada cliente receberá apenas o que solicitou
 
-                switch (_currentRequestedUI)
+                var tasks = new List<Task>
                 {
-                    case RequestedUI.NONE: await Task.Delay(100, stoppingToken); break;
-                    case RequestedUI.TIME_DOMAIN: await SendStreamingData(switchCts.Token); break;
-                    case RequestedUI.FFT: await SendFFTData(switchCts.Token); break;
-                }
+                    SendStreamingDataToSubscribers(stoppingToken),
+                    SendFFTDataToSubscribers(stoppingToken),
+                    SendAvailableSensorsList(stoppingToken)
+                };
+
+                await Task.WhenAny(tasks);
             }
         }
-        private async Task SendStreamingData(CancellationToken cancellationToken)
+
+        private async Task SendAvailableSensorsList(CancellationToken stoppingToken)
+        {
+            try
+            {
+                while (!stoppingToken.IsCancellationRequested)
+                {
+                    var now = DateTime.Now;
+                    var activeSensorsList = _activeSensors
+                        .Where(kvp => (now - kvp.Value).TotalSeconds < 30)
+                        .Select(kvp => new { mac = kvp.Key, lastSeen = kvp.Value })
+                        .ToList();
+
+                    // Remover sensores que não enviaram dados recentemente
+                    foreach (var inactiveSensor in _activeSensors
+                        .Where(kvp => (now - kvp.Value).TotalSeconds >= 30)
+                        .Select(kvp => kvp.Key)
+                        .ToList())
+                    {
+                        _activeSensors.TryRemove(inactiveSensor, out _);
+                    }
+
+                    var payload = new
+                    {
+                        type = "available_sensors",
+                        sensors = activeSensorsList,
+                        timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    };
+
+                    // Enviar para TODOS os clientes conectados
+                    await _webSocket.Broadcast(payload);
+
+                    // Enviar a cada 2 segundos
+                    await Task.Delay(2000, stoppingToken);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error sending available sensors list.");
+            }
+        }
+
+        private async Task SendStreamingDataToSubscribers(CancellationToken cancellationToken)
         {
             try
             {
@@ -54,33 +102,33 @@ namespace IIoTVale.Backend.API.Workers
                 {
                     if (dto is DataStreamingDto data)
                     {
-                        var sensorMac = data.SensorMAC;
-                        await _webSocket.Broadcast(new
+                        _activeSensors.AddOrUpdate(data.SensorMAC, DateTime.Now, (_, _) => DateTime.Now);
+                        var payload = new
                         {
+                            type = "time_domain",
                             sensor = data.SensorMAC,
                             frequency = data.Frequency,
-                            // Transformamos a lista DataModel em uma nova lista de objetos anônimos
                             data = data.DataModel.Select(m => new
                             {
                                 ts = m.SampleTime,
-                                vals = new
-                                {
-                                    X = m.AccX,
-                                    Y = m.AccY,
-                                    Z = m.AccZ
-                                }
+                                vals = new { X = m.AccX, Y = m.AccY, Z = m.AccZ }
                             }).ToList()
-                        });
+                        };
+
+                        //  Enviar apenas para clientes que solicitaram TIME_DOMAIN
+                        await _webSocket.SendToFilteredClients(payload, 
+                            client => client.RequestedUI == RequestedUI.TIME_DOMAIN && client.RequestedSensorMac == data.SensorMAC);
                     }
                 }
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error trying process data to UI.");
+                _logger.LogError(ex, "Error processing time domain data.");
             }
         }
-        private async Task SendFFTData(CancellationToken cancellationToken)
+
+        private async Task SendFFTDataToSubscribers(CancellationToken cancellationToken)
         {
             try
             {
@@ -101,7 +149,7 @@ namespace IIoTVale.Backend.API.Workers
                         List<SignalProcessingService.FrequencyBin> fftResultY = SignalProcessingService.ComputeFft(bufferY, data.Frequency);
                         List<SignalProcessingService.FrequencyBin> fftResultZ = SignalProcessingService.ComputeFft(bufferZ, data.Frequency);
 
-                        await _webSocket.Broadcast(new
+                        var payload = new
                         {
                             Type = "fft_data",
                             Sensor = sensorMac,
@@ -116,17 +164,18 @@ namespace IIoTVale.Backend.API.Workers
                                 Y = fftResultY.Select(bin => bin.Magnitude).ToList(),
                                 Z = fftResultZ.Select(bin => bin.Magnitude).ToList()
                             }
-                        });
+                        };
+
+                        //  Enviar apenas para clientes que solicitaram FFT
+                        await _webSocket.SendToFilteredClients(payload,
+                            client => client.RequestedUI == RequestedUI.FFT && client.RequestedSensorMac == sensorMac);
                     }
                 }
             }
-            catch (OperationCanceledException)
-            {
-                _fftQueue.Clear();
-            }
+            catch (OperationCanceledException) { _fftQueue.Clear(); }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error trying process data to UI.");
+                _logger.LogError(ex, "Error processing FFT data.");
             }
         }
 

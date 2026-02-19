@@ -2,6 +2,7 @@ using IIoTVale.Backend.API.Services;
 using IIoTVale.Backend.API.Workers;
 using IIoTVale.Backend.API.Wrappers;
 using Serilog;
+using static IIoTVale.Backend.API.Services.WebSocketClient;
 
 void ConfigureSerilog(ConfigurationManager configurationManager, ConfigureHostBuilder host)
 {
