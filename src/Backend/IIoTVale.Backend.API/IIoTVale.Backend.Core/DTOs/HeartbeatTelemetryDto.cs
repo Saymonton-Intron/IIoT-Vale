@@ -20,7 +20,7 @@ namespace IIoTVale.Backend.Core.DTOs
         public double BatteryVolts { get; set; }
         public SensorType SensorType { get; set; }
         public int AvailableChannels { get; set; }
-        public byte[] ChannelsStatus { get; set; }
+        public byte ChannelsStatus { get; set; }
 
         public TelemetryMode TelemetryMode => TelemetryMode.UPDATE;
     }

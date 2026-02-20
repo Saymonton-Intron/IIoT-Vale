@@ -43,7 +43,7 @@ namespace IIoTVale.Backend.API.Workers
 
                 var tasks = new List<Task>
                 {
-                    SendStreamingDataToSubscribers(stoppingToken),
+                    SendStreamingAndHeartbeatToSubscribers(stoppingToken),
                     SendFFTDataToSubscribers(stoppingToken),
                     SendAvailableSensorsList(stoppingToken)
                 };
@@ -56,17 +56,18 @@ namespace IIoTVale.Backend.API.Workers
         {
             try
             {
+                TimeSpan _maxIdleSeconds = TimeSpan.FromSeconds(10);
                 while (!stoppingToken.IsCancellationRequested)
                 {
                     var now = DateTime.Now;
                     var activeSensorsList = _activeSensors
-                        .Where(kvp => (now - kvp.Value).TotalSeconds < 30)
+                        .Where(kvp => now - kvp.Value < _maxIdleSeconds)
                         .Select(kvp => new { mac = kvp.Key, lastSeen = kvp.Value })
                         .ToList();
 
                     // Remover sensores que não enviaram dados recentemente
                     foreach (var inactiveSensor in _activeSensors
-                        .Where(kvp => (now - kvp.Value).TotalSeconds >= 30)
+                        .Where(kvp => now - kvp.Value >= _maxIdleSeconds)
                         .Select(kvp => kvp.Key)
                         .ToList())
                     {
@@ -76,10 +77,9 @@ namespace IIoTVale.Backend.API.Workers
                     var payload = new
                     {
                         type = "available_sensors",
-                        sensors = activeSensorsList,
+                        connectedSensors = activeSensorsList,
                         timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
                     };
-
                     // Enviar para TODOS os clientes conectados
                     await _webSocket.Broadcast(payload);
 
@@ -94,21 +94,21 @@ namespace IIoTVale.Backend.API.Workers
             }
         }
 
-        private async Task SendStreamingDataToSubscribers(CancellationToken cancellationToken)
+        private async Task SendStreamingAndHeartbeatToSubscribers(CancellationToken cancellationToken)
         {
             try
             {
                 await foreach (ITelemetryDto dto in _uiReader.ReadAllAsync(cancellationToken))
                 {
-                    if (dto is DataStreamingDto data)
+                    if (dto is DataStreamingDto streaming)
                     {
-                        _activeSensors.AddOrUpdate(data.SensorMAC, DateTime.Now, (_, _) => DateTime.Now);
+                        _activeSensors.AddOrUpdate(streaming.SensorMAC, DateTime.Now, (_, _) => DateTime.Now);
                         var payload = new
                         {
                             type = "time_domain",
-                            sensor = data.SensorMAC,
-                            frequency = data.Frequency,
-                            data = data.DataModel.Select(m => new
+                            sensor = streaming.SensorMAC,
+                            frequency = streaming.Frequency,
+                            data = streaming.DataModel.Select(m => new
                             {
                                 ts = m.SampleTime,
                                 vals = new { X = m.AccX, Y = m.AccY, Z = m.AccZ }
@@ -116,8 +116,24 @@ namespace IIoTVale.Backend.API.Workers
                         };
 
                         //  Enviar apenas para clientes que solicitaram TIME_DOMAIN
-                        await _webSocket.SendToFilteredClients(payload, 
-                            client => client.RequestedUI == RequestedUI.TIME_DOMAIN && client.RequestedSensorMac == data.SensorMAC);
+                        await _webSocket.SendToFilteredClients(payload,
+                            client => client.RequestedUI == RequestedUI.TIME_DOMAIN && client.RequestedSensorMac == streaming.SensorMAC);
+                    }
+                    else if (dto is HeartbeatTelemetryDto heartbeat)
+                    {
+                        _activeSensors.AddOrUpdate(heartbeat.SensorMAC, DateTime.Now, (_, _) => DateTime.Now);
+                        var payload = new
+                        {
+                            type = "heartbeat",
+                            sensor = heartbeat.SensorMAC,
+                            lqi = heartbeat.NetworkStatus.LQI,
+                            temperature = heartbeat.NetworkStatus.InternalTemperature,
+                            dataLogger = heartbeat.DataLoggerMemoryPercentage,
+                            batteryVolts = heartbeat.BatteryVolts / 1000,
+                            channelStatus = heartbeat.ChannelsStatus
+                        };
+
+                        await _webSocket.Broadcast(payload);
                     }
                 }
             }

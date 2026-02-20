@@ -39,6 +39,7 @@ namespace IIoTVale.Backend.API.Workers
                     {
                         isReconnecting = true;
                         await client.ConnectAsync(options, stoppingToken);
+                        Console.WriteLine("Successfully connected to broker.");
                     }
                     catch (MQTTnet.Exceptions.MqttCommunicationException)
                     {
@@ -69,13 +70,13 @@ namespace IIoTVale.Backend.API.Workers
                 var payload = e.ApplicationMessage.Payload.ToArray();
                 // Implement...
                 ITelemetryDto telemetry = ProcessPayload(e.ApplicationMessage.Topic, payload);
-                if (telemetry is DataStreamingDto streaming)
+                if (telemetry is DataStreamingDto || telemetry is HeartbeatTelemetryDto)
                 {
                     await _Dbwriter.WriteAsync(streaming);
 
                     if (_webSocket.AnyConnectionAvailable)
                     {
-                    await _Uiwriter.WriteAsync(streaming);
+                        await _Uiwriter.WriteAsync(telemetry);
                     }
                 }
             };
@@ -125,6 +126,11 @@ namespace IIoTVale.Backend.API.Workers
             {
                 if (payload[1] == 0x0E) //HeartBeat
                 {
+                    var channelsStatus = 0;
+                    channelsStatus |= (payload[45] << 0);
+                    channelsStatus |= (payload[46] << 1);
+                    channelsStatus |= (payload[47] << 2);
+
                     return new HeartbeatTelemetryDto()
                     {
                         SensorMAC = sensorMAC,
@@ -139,7 +145,7 @@ namespace IIoTVale.Backend.API.Workers
                         DataLoggerMemoryPercentage = (payload[37] / 200.0) * 100.0,
                         BatteryVolts = BitConverter.ToInt16([payload[42], payload[43]]),
                         AvailableChannels = payload[44],
-                        ChannelsStatus = [payload[45], payload[46], payload[47]],
+                        ChannelsStatus = (byte)channelsStatus,
                     };
                 }
                 else if (payload[1] == 0x4F) // 0x4F CREATE PROFILE | 0x10 DAQ
@@ -298,9 +304,9 @@ namespace IIoTVale.Backend.API.Workers
                         Console.WriteLine($"");
                         Console.WriteLine($"Sensores");
                         Console.WriteLine($"Canais disponiveis: {heartbeat.AvailableChannels}");
-                        Console.WriteLine($"Canal um: {heartbeat.ChannelsStatus[0]}");
-                        Console.WriteLine($"Canal dois: {heartbeat.ChannelsStatus[1]}");
-                        Console.WriteLine($"Canal tres: {heartbeat.ChannelsStatus[2]}");
+                        Console.WriteLine($"Canal um: {IsBitHigh(heartbeat.ChannelsStatus, 0)}");
+                        Console.WriteLine($"Canal dois: {IsBitHigh(heartbeat.ChannelsStatus, 1)}");
+                        Console.WriteLine($"Canal tres: {IsBitHigh(heartbeat.ChannelsStatus, 2)}");
                     }
                     break;
                 case TelemetryMode.CREATE:
@@ -359,5 +365,6 @@ namespace IIoTVale.Backend.API.Workers
                     break;
             }
         }
+        private static bool IsBitHigh(byte b, int offSet) => (b & (1 << offSet)) != 0;
     }
 }
