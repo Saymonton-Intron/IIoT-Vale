@@ -89,7 +89,7 @@ namespace IIoTVale.Backend.API.Services
                         case "set_ui_mode":
                             client.RequestedUI = request.RequestedUI;
                             client.RequestedSensorMac = request.RequestedSensorMac;
-                            Console.WriteLine($"Cliente {client.ClientId} alterou UI para {client.RequestedUI}");
+                            //Console.WriteLine($"Cliente {client.ClientId} alterou UI para {client.RequestedUI}");
                             break;
 
                             // Configurações COMPARTILHADAS (broadcast)

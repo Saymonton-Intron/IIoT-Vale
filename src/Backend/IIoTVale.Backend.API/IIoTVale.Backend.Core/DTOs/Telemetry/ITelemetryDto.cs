@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace IIoTVale.Backend.Core.DTOs
+namespace IIoTVale.Backend.Core.DTOs.Telemetry
 {
     public enum TelemetryMode
     {

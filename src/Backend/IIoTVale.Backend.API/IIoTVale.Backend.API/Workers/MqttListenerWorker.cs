@@ -1,6 +1,6 @@
 ﻿using IIoTVale.Backend.API.Services;
 using IIoTVale.Backend.API.Wrappers;
-using IIoTVale.Backend.Core.DTOs;
+using IIoTVale.Backend.Core.DTOs.Telemetry;
 using IIoTVale.Backend.Core.Enums;
 using MQTTnet;
 using System.Buffers;
@@ -72,7 +72,7 @@ namespace IIoTVale.Backend.API.Workers
                 ITelemetryDto telemetry = ProcessPayload(e.ApplicationMessage.Topic, payload);
                 if (telemetry is DataStreamingDto || telemetry is HeartbeatTelemetryDto)
                 {
-                    await _Dbwriter.WriteAsync(streaming);
+                    await _Dbwriter.WriteAsync(telemetry);
 
                     if (_webSocket.AnyConnectionAvailable)
                     {

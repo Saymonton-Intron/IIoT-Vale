@@ -1,4 +1,4 @@
-﻿using IIoTVale.Backend.Core.DTOs;
+﻿using IIoTVale.Backend.Core.DTOs.Telemetry;
 using System.Threading.Channels;
 
 namespace IIoTVale.Backend.API.Wrappers
