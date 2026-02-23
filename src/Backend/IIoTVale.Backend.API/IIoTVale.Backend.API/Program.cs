@@ -1,3 +1,4 @@
+using IIoTVale.Backend.API.Features.Alarms;
 using IIoTVale.Backend.API.Services;
 using IIoTVale.Backend.API.Workers;
 using IIoTVale.Backend.API.Wrappers;
@@ -34,6 +35,7 @@ builder.Services.AddSingleton<DbChannel>();
 builder.Services.AddSingleton<UiChannel>();
 
 builder.Services.AddSingleton<DatabaseService>();
+builder.Services.AddSingleton<AlarmsService>();
 
 builder.Services.AddSingleton<WebSocketHandler>();
 
@@ -59,7 +61,7 @@ try
     app.MapControllers();
 
     app.UseCors(policy => policy // Alterar depois
-        .WithOrigins("http://192.168.7.6:3000/", "http://localhost:3000")
+        .WithOrigins("http://192.168.7.102:3000/", "http://localhost:3000")
         .AllowAnyMethod()
         .AllowAnyHeader()
         .AllowCredentials());

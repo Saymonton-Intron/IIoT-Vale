@@ -1,8 +1,11 @@
-﻿using IIoTVale.Backend.Core.DTOs;
+﻿using IIoTVale.Backend.Core.DTOs.Configuration;
+using IIoTVale.Backend.Core.DTOs.Telemetry;
+using Microsoft.AspNetCore.Mvc;
 using Npgsql;
 using NpgsqlTypes;
 using System.Collections.Concurrent;
 using System.Text;
+using System.Text.Json;
 
 namespace IIoTVale.Backend.API.Services
 {
@@ -11,6 +14,8 @@ namespace IIoTVale.Backend.API.Services
         private readonly string _connectionString;
         private readonly ConcurrentDictionary<string, byte> _knownTables = [];
         private readonly ILogger<DatabaseService> _logger;
+        private const string AlarmConfigTableName = "alarm_configs";
+
         public DatabaseService(IConfiguration configuration, ILogger<DatabaseService> _logger)
         {
             this._connectionString = configuration.GetConnectionString("TimescaleDb") ?? throw new ArgumentNullException();
@@ -21,7 +26,7 @@ namespace IIoTVale.Backend.API.Services
         public async void InitAsync()
         {
             await LoadExistingTablesAsync();
-
+            await EnsureAlarmConfigTableExistsAsync();
         }
 
         public string GetConnectionString() => _connectionString;
@@ -35,7 +40,7 @@ namespace IIoTVale.Backend.API.Services
                 string tableName = SanitizeTableName(sensorGroup.Key);
                 if (string.IsNullOrWhiteSpace(tableName)) continue;
                 var count = sensorGroup.Count();
-                _logger.LogInformation("Inserindo batch com {count} informações para o sensor {tableName}", tableName, count);
+                //_logger.LogInformation("Inserindo batch com {count} informações para o sensor {tableName}", count, tableName);
 
                 try
                 {
@@ -148,6 +153,120 @@ namespace IIoTVale.Backend.API.Services
 
             // Adiciona ao cache local
             _knownTables.TryAdd(tableName, 0);
+        }
+
+        private async Task EnsureAlarmConfigTableExistsAsync()
+        {
+            try
+            {
+                using (NpgsqlConnection connection = new NpgsqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+
+                    string createTableSql = $@"
+                    CREATE TABLE IF NOT EXISTS ""{AlarmConfigTableName}"" (
+                        mac_address TEXT PRIMARY KEY,
+                        config JSONB NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ DEFAULT NOW()
+                    );";
+
+                    using (NpgsqlCommand command = new NpgsqlCommand(createTableSql, connection))
+                    {
+                        await command.ExecuteNonQueryAsync();
+                    }
+
+                    _knownTables.TryAdd(AlarmConfigTableName, 0);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao criar tabela de configurações de alarmes.");
+            }
+        }
+
+        public async Task<bool> SaveAlarmConfigAsync(string macAddress, GlobalAlarmConfig alarmConfig, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using (NpgsqlConnection connection = new NpgsqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync(cancellationToken);
+
+                    var jsonOptions = new JsonSerializerOptions
+                    {
+                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                        WriteIndented = false
+                    };
+
+                    string configJson = JsonSerializer.Serialize(alarmConfig, jsonOptions);
+
+                    string upsertSql = $@"
+                    INSERT INTO ""{AlarmConfigTableName}"" (mac_address, config, updated_at)
+                    VALUES (@macAddress, @config::jsonb, NOW())
+                    ON CONFLICT (mac_address)
+                    DO UPDATE SET config = @config::jsonb, updated_at = NOW();";
+
+                    using (NpgsqlCommand command = new NpgsqlCommand(upsertSql, connection))
+                    {
+                        command.Parameters.AddWithValue("@macAddress", macAddress);
+                        command.Parameters.AddWithValue("@config", configJson);
+
+                        await command.ExecuteNonQueryAsync(cancellationToken);
+                    }
+
+                    _logger.LogInformation("Configuração de alarme salva para o sensor {MacAddress}", macAddress);
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao salvar configuração de alarme para o sensor {MacAddress}", macAddress);
+                return false;
+            }
+        }
+
+        public async Task<GlobalAlarmConfig?> GetAlarmConfigAsync(string macAddress, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using (NpgsqlConnection connection = new NpgsqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync(cancellationToken);
+
+                    string selectSql = $@"
+                    SELECT config FROM ""{AlarmConfigTableName}""
+                    WHERE mac_address = @macAddress;";
+
+                    using (NpgsqlCommand command = new NpgsqlCommand(selectSql, connection))
+                    {
+                        command.Parameters.AddWithValue("@macAddress", macAddress);
+
+                        using (NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken))
+                        {
+                            if (await reader.ReadAsync(cancellationToken))
+                            {
+                                string configJson = reader.GetString(0);
+
+                                var jsonOptions = new JsonSerializerOptions
+                                {
+                                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                                    PropertyNameCaseInsensitive = true
+                                };
+
+                                return JsonSerializer.Deserialize<GlobalAlarmConfig>(configJson, jsonOptions);
+                            }
+                        }
+                    }
+
+                    return null;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao buscar configuração de alarme para o sensor {MacAddress}", macAddress);
+                return null;
+            }
         }
     }
 }
